@@ -1,43 +1,31 @@
 package com.j256.cloudwatchlogbackappender;
 
-import static org.easymock.EasyMock.createMock;
-import static org.easymock.EasyMock.expect;
-import static org.easymock.EasyMock.expectLastCall;
-import static org.easymock.EasyMock.getCurrentArguments;
-import static org.easymock.EasyMock.isA;
-import static org.easymock.EasyMock.replay;
-import static org.easymock.EasyMock.verify;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-
-import java.util.List;
-
-import org.easymock.IAnswer;
-import org.junit.Test;
-
-import com.amazonaws.services.logs.AWSLogsClient;
-import com.amazonaws.services.logs.model.InputLogEvent;
-import com.amazonaws.services.logs.model.PutLogEventsRequest;
-import com.amazonaws.services.logs.model.PutLogEventsResult;
-
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.PatternLayout;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.LoggingEvent;
 import ch.qos.logback.core.Appender;
+import org.easymock.IAnswer;
+import org.junit.Test;
+import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsAsyncClient;
+import software.amazon.awssdk.services.cloudwatchlogs.model.InputLogEvent;
+import software.amazon.awssdk.services.cloudwatchlogs.model.PutLogEventsRequest;
+import software.amazon.awssdk.services.cloudwatchlogs.model.PutLogEventsResponse;
+
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
+import static org.easymock.EasyMock.*;
+import static org.junit.Assert.*;
 
 public class CloudWatchAppenderTest {
 
 	@Test(timeout = 5000)
 	public void testBasic() throws InterruptedException {
 		CloudWatchAppender appender = new CloudWatchAppender();
-		AWSLogsClient awsLogClient = createMock(AWSLogsClient.class);
-		appender.setAwsLogsClient(awsLogClient);
+		CloudWatchLogsAsyncClient awsLogClient = createMock(CloudWatchLogsAsyncClient.class);
+		appender.setCloudWatchLogsAsyncClient(awsLogClient);
 
 		appender.setMaxBatchSize(1);
 		appender.setRegion("region");
@@ -63,22 +51,19 @@ public class CloudWatchAppenderTest {
 		String threadName = Thread.currentThread().getName();
 		final String fullMessage = "[" + threadName + "] " + level + " " + loggerName + " - " + message + "\n";
 
-		final PutLogEventsResult result = new PutLogEventsResult();
-		String sequence = "ewopjfewfj";
-		result.setNextSequenceToken(sequence);
-		expect(awsLogClient.putLogEvents(isA(PutLogEventsRequest.class))).andAnswer(new IAnswer<PutLogEventsResult>() {
-			@Override
-			public PutLogEventsResult answer() {
-				PutLogEventsRequest request = (PutLogEventsRequest) getCurrentArguments()[0];
-				assertEquals(logGroup, request.getLogGroupName());
-				assertEquals(logStream, request.getLogStreamName());
-				List<InputLogEvent> events = request.getLogEvents();
-				assertEquals(1, events.size());
-				assertEquals(fullMessage, events.get(0).getMessage());
-				return result;
-			}
-		}).times(2);
-		awsLogClient.shutdown();
+		final PutLogEventsResponse result = PutLogEventsResponse.builder().build();
+
+		result.nextSequenceToken();
+		expect(awsLogClient.putLogEvents(isA(PutLogEventsRequest.class))).andAnswer(() -> {
+            PutLogEventsRequest request = (PutLogEventsRequest) getCurrentArguments()[0];
+            assertEquals(logGroup, request.logGroupName());
+            assertEquals(logStream, request.logStreamName());
+            List<InputLogEvent> events = request.logEvents();
+            assertEquals(1, events.size());
+            assertEquals(fullMessage, events.get(0).message());
+            return CompletableFuture.completedFuture(result);
+        }).times(2);
+		awsLogClient.close();
 
 		// =====================================
 
@@ -99,8 +84,8 @@ public class CloudWatchAppenderTest {
 	@Test(timeout = 5000)
 	public void testEmergencyAppender() throws InterruptedException {
 		CloudWatchAppender appender = new CloudWatchAppender();
-		AWSLogsClient awsLogClient = createMock(AWSLogsClient.class);
-		appender.setAwsLogsClient(awsLogClient);
+		CloudWatchLogsAsyncClient awsLogClient = createMock(CloudWatchLogsAsyncClient.class);
+		appender.setCloudWatchLogsAsyncClient(awsLogClient);
 
 		appender.setMaxBatchSize(1);
 		appender.setRegion("region");
@@ -126,7 +111,7 @@ public class CloudWatchAppenderTest {
 
 		expect(awsLogClient.putLogEvents(isA(PutLogEventsRequest.class)))
 				.andThrow(new RuntimeException("force emergency log")).anyTimes();
-		awsLogClient.shutdown();
+		awsLogClient.close();
 
 		// =====================================
 
@@ -137,19 +122,16 @@ public class CloudWatchAppenderTest {
 		expect(emergencyAppender.isStarted()).andReturn(false);
 		emergencyAppender.start();
 		emergencyAppender.doAppend(isA(ILoggingEvent.class));
-		expectLastCall().andAnswer(new IAnswer<Void>() {
-			@Override
-			public Void answer() {
-				ILoggingEvent event = (ILoggingEvent) getCurrentArguments()[0];
-				if (event.getLevel() == level) {
-					assertEquals(loggerName, event.getLoggerName());
-					assertEquals(threadName, event.getThreadName());
-				} else {
-					assertEquals(Level.ERROR, event.getLevel());
-				}
-				return null;
-			}
-		}).times(2);
+		expectLastCall().andAnswer((IAnswer<Void>) () -> {
+            ILoggingEvent event1 = (ILoggingEvent) getCurrentArguments()[0];
+            if (event1.getLevel() == level) {
+                assertEquals(loggerName, event1.getLoggerName());
+                assertEquals(threadName, event1.getThreadName());
+            } else {
+                assertEquals(Level.ERROR, event1.getLevel());
+            }
+            return null;
+        }).times(2);
 		emergencyAppender.stop();
 
 		// =====================================
@@ -207,4 +189,5 @@ public class CloudWatchAppenderTest {
 			// expected
 		}
 	}
+
 }
