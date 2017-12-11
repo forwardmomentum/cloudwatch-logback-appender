@@ -1,14 +1,5 @@
 package com.j256.cloudwatchlogbackappender;
 
-import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Iterator;
-import java.util.List;
-import java.util.concurrent.*;
-
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.LoggingEvent;
@@ -18,21 +9,22 @@ import ch.qos.logback.core.Layout;
 import ch.qos.logback.core.UnsynchronizedAppenderBase;
 import ch.qos.logback.core.spi.AppenderAttachable;
 import software.amazon.awssdk.core.AmazonServiceException;
-import software.amazon.awssdk.core.AmazonWebServiceRequest;
-import software.amazon.awssdk.core.auth.AwsCredentials;
-import software.amazon.awssdk.core.auth.AwsCredentialsProvider;
-import software.amazon.awssdk.core.auth.DefaultCredentialsProvider;
-import software.amazon.awssdk.core.auth.StaticCredentialsProvider;
+import software.amazon.awssdk.core.auth.*;
 import software.amazon.awssdk.core.regions.Region;
 import software.amazon.awssdk.core.util.EC2MetadataUtils;
-import software.amazon.awssdk.services.cloudwatch.CloudWatchAsyncClient;
-import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsAsyncClient;
+import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsClient;
 import software.amazon.awssdk.services.cloudwatchlogs.model.*;
 import software.amazon.awssdk.services.ec2.EC2Client;
 import software.amazon.awssdk.services.ec2.model.DescribeTagsRequest;
 import software.amazon.awssdk.services.ec2.model.DescribeTagsResponse;
 import software.amazon.awssdk.services.ec2.model.Filter;
 import software.amazon.awssdk.services.ec2.model.TagDescription;
+
+import java.util.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 /**
  * CloudWatch log appender for logback.
@@ -75,7 +67,7 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	private boolean createLogDests = DEFAULT_CREATE_LOG_DESTS;
 	private long initialWaitTimeMillis = DEFAULT_INITIAL_WAIT_TIME_MILLIS;
 
-	private CloudWatchLogsAsyncClient cloudWatchLogsAsyncClient;
+	private CloudWatchLogsClient cloudWatchLogsClient;
 	private long eventsWrittenCount;
 
 	private BlockingQueue<ILoggingEvent> loggingEventQueue;
@@ -139,9 +131,9 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
-		if (cloudWatchLogsAsyncClient != null) {
-			cloudWatchLogsAsyncClient.close();
-			cloudWatchLogsAsyncClient = null;
+		if (cloudWatchLogsClient != null) {
+			cloudWatchLogsClient.close();
+			cloudWatchLogsClient = null;
 		}
 	}
 
@@ -237,8 +229,8 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	}
 
 	// not required, for testing purposes
-	void setCloudWatchLogsAsyncClient(CloudWatchLogsAsyncClient cloudWatchLogsAsyncClient) {
-		this.cloudWatchLogsAsyncClient = cloudWatchLogsAsyncClient;
+	void setCloudWatchLogsClient(CloudWatchLogsClient cloudWatchLogsClient) {
+		this.cloudWatchLogsClient = cloudWatchLogsClient;
 	}
 
 	// for testing purposes
@@ -390,7 +382,7 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 				Exception exception = null;
 				try {
 					stopMessagesThreadLocal.set(true);
-					if (cloudWatchLogsAsyncClient == null) {
+					if (cloudWatchLogsClient == null) {
 						createLogsClient();
 					}
 				} catch (Exception e) {
@@ -404,7 +396,7 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 			}
 
 			// if we didn't get an aws logs-client then just write to the emergency appender (if any)
-			if (cloudWatchLogsAsyncClient == null) {
+			if (cloudWatchLogsClient == null) {
 				appendToEmergencyAppender(events);
 				return;
 			}
@@ -431,8 +423,8 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 						if (sequenceToken != null) {
 							requestBuilder.sequenceToken(sequenceToken);
 						}
-                        CompletableFuture<PutLogEventsResponse> putLogEventsResponseCompletableFuture = cloudWatchLogsAsyncClient.putLogEvents(requestBuilder.build());
-                        sequenceToken = putLogEventsResponseCompletableFuture.get().nextSequenceToken();
+                        PutLogEventsResponse response = cloudWatchLogsClient.putLogEvents(requestBuilder.build());
+                        sequenceToken = response.nextSequenceToken();
 						exception = null;
 						eventsWrittenCount += logEvents.size();
 						break;
@@ -479,11 +471,11 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 			}
 			if (MiscUtils.isBlank(accessKeyId)) {
 				// if we are still blank then use the default credentials provider
-				credentialProvider = DefaultCredentialsProvider.builder().build();
-			} else {
+                credentialProvider = DefaultCredentialsProvider.create();
+            } else {
 				credentialProvider = StaticCredentialsProvider.create(AwsCredentials.create(accessKeyId, secretKey));
 			}
-			cloudWatchLogsAsyncClient = CloudWatchLogsAsyncClient.builder()
+			cloudWatchLogsClient = CloudWatchLogsClient.builder()
 					.credentialsProvider(credentialProvider)
 					.region(Region.of(region))
 					.build();
@@ -494,16 +486,16 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 
 		private void verifyLogGroupExists() throws ExecutionException, InterruptedException {
 			DescribeLogGroupsRequest request = DescribeLogGroupsRequest.builder().logGroupNamePrefix(logGroup).build();
-			CompletableFuture<DescribeLogGroupsResponse> describeLogGroupsResponseCompletableFuture = cloudWatchLogsAsyncClient.describeLogGroups(request);
-			DescribeLogGroupsResponse describeLogGroupsResponse = describeLogGroupsResponseCompletableFuture.get();
-			for (LogGroup group : describeLogGroupsResponse.logGroups()) {
+			DescribeLogGroupsResponse response = cloudWatchLogsClient.describeLogGroups(request);
+			for (LogGroup group : response.logGroups()) {
 				if (logGroup.equals(group.logGroupName())) {
 					return;
 				}
 			}
 			if (createLogDests) {
-				callLogClientMethod("createLogGroup", CreateLogGroupRequest.builder().logGroupName(logGroup).build());
-			} else {
+                CreateLogGroupRequest logGroupRequest = CreateLogGroupRequest.builder().logGroupName(logGroup).build();
+                cloudWatchLogsClient.createLogGroup(logGroupRequest);
+            } else {
 				logWarn("Log-group '" + logGroup + "' doesn't exist and not created", null);
 			}
 		}
@@ -511,36 +503,18 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 		private void verifyLogStreamExists() throws ExecutionException, InterruptedException {
 			DescribeLogStreamsRequest request =
 					DescribeLogStreamsRequest.builder().logGroupName(logGroup).logStreamNamePrefix(logStream).build();
-			CompletableFuture<DescribeLogStreamsResponse> describeLogStreamsResponseCompletableFuture = cloudWatchLogsAsyncClient.describeLogStreams(request);
-			DescribeLogStreamsResponse describeLogStreamsResponse = describeLogStreamsResponseCompletableFuture.get();
-			for (LogStream stream : describeLogStreamsResponse.logStreams()) {
+			DescribeLogStreamsResponse response = cloudWatchLogsClient.describeLogStreams(request);
+			for (LogStream stream : response.logStreams()) {
 				if (logStream.equals(stream.logStreamName())) {
 					sequenceToken = stream.uploadSequenceToken();
 					return;
 				}
 			}
 			if (createLogDests) {
-				callLogClientMethod("createLogStream", CreateLogStreamRequest.builder().logGroupName(logGroup).logStreamName(logStream).build());
-			} else {
+                CreateLogStreamRequest logStreamRequest = CreateLogStreamRequest.builder().logGroupName(logGroup).logStreamName(logStream).build();
+                cloudWatchLogsClient.createLogStream(logStreamRequest);
+            } else {
 				logWarn("Log-stream '" + logStream + "' doesn't exist and not created", null);
-			}
-		}
-
-		/**
-		 * This is a hack to work around the problems that were introduced when the appender was compiled with AWS SDK
-		 * version 1.9 or 1.10 but the user was running with version 1.11.
-		 * 
-		 * The problem was that the createLogStream() method added a return object somewhere between 1.10 and 1.11 which
-		 * broke backwards compatibility and the applications would throw NoSuchMethodError. Using reflection causes the
-		 * linkage to be weaker and seems to work.
-		 */
-		private void callLogClientMethod(String methodName, AmazonWebServiceRequest arg) {
-			try {
-				Method method = cloudWatchLogsAsyncClient.getClass().getMethod(methodName, arg.getClass());
-				method.invoke(cloudWatchLogsAsyncClient, arg);
-				logInfo("Created: " + arg);
-			} catch (Exception e) {
-				logError("Problems creating: " + arg, e);
 			}
 		}
 

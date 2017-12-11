@@ -8,13 +8,12 @@ import ch.qos.logback.classic.spi.LoggingEvent;
 import ch.qos.logback.core.Appender;
 import org.easymock.IAnswer;
 import org.junit.Test;
-import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsAsyncClient;
+import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsClient;
 import software.amazon.awssdk.services.cloudwatchlogs.model.InputLogEvent;
 import software.amazon.awssdk.services.cloudwatchlogs.model.PutLogEventsRequest;
 import software.amazon.awssdk.services.cloudwatchlogs.model.PutLogEventsResponse;
 
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 
 import static org.easymock.EasyMock.*;
 import static org.junit.Assert.*;
@@ -24,8 +23,8 @@ public class CloudWatchAppenderTest {
 	@Test(timeout = 5000)
 	public void testBasic() throws InterruptedException {
 		CloudWatchAppender appender = new CloudWatchAppender();
-		CloudWatchLogsAsyncClient awsLogClient = createMock(CloudWatchLogsAsyncClient.class);
-		appender.setCloudWatchLogsAsyncClient(awsLogClient);
+		CloudWatchLogsClient awsLogClient = createMock(CloudWatchLogsClient.class);
+		appender.setCloudWatchLogsClient(awsLogClient);
 
 		appender.setMaxBatchSize(1);
 		appender.setRegion("region");
@@ -61,7 +60,7 @@ public class CloudWatchAppenderTest {
             List<InputLogEvent> events = request.logEvents();
             assertEquals(1, events.size());
             assertEquals(fullMessage, events.get(0).message());
-            return CompletableFuture.completedFuture(result);
+            return result;
         }).times(2);
 		awsLogClient.close();
 
@@ -84,8 +83,8 @@ public class CloudWatchAppenderTest {
 	@Test(timeout = 5000)
 	public void testEmergencyAppender() throws InterruptedException {
 		CloudWatchAppender appender = new CloudWatchAppender();
-		CloudWatchLogsAsyncClient awsLogClient = createMock(CloudWatchLogsAsyncClient.class);
-		appender.setCloudWatchLogsAsyncClient(awsLogClient);
+		CloudWatchLogsClient awsLogClient = createMock(CloudWatchLogsClient.class);
+		appender.setCloudWatchLogsClient(awsLogClient);
 
 		appender.setMaxBatchSize(1);
 		appender.setRegion("region");
