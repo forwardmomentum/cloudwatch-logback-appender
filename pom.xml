@@ -4,7 +4,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>com.github.forwardmomentum</groupId>
 	<artifactId>cloudwatchlogbackappender</artifactId>
-	<version>2.12</version>
+	<version>1.11</version>
 	<packaging>jar</packaging>
 	<name>Cloudwatch Logback Appender</name>
 	<url>https://github.com/forwardmomentum/cloudwatch-logback-appender</url>
